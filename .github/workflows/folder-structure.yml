@@ -1,0 +1,118 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Folder Structure Enforcement
+
+on:
+  push:
+    branches:
+      - main
+      - release/*
+      - feat/*
+
+jobs:
+  check-folder-structure:
+    name: Check folder structure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate folder structures
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FAILED=0
+
+          # ─────────────────────────────────────────────────────────────────────
+          # check_folder <path> [file:<glob> ...] [dir:<glob> ...]
+          #
+          # Asserts that every direct child of <path> matches one of the
+          # supplied patterns.  To enforce structure on more directories in the
+          # future, add another check_folder call in the "Rules" section below.
+          # ─────────────────────────────────────────────────────────────────────
+          check_folder() {
+            local folder="$1"; shift
+            local -a file_pats=() dir_pats=()
+
+            for arg in "$@"; do
+              case "$arg" in
+                file:*) file_pats+=("${arg#file:}") ;;
+                dir:*)  dir_pats+=("${arg#dir:}")   ;;
+              esac
+            done
+
+            echo "Checking ${folder}/"
+
+            if [[ ! -d "$folder" ]]; then
+              echo "  ERROR: '${folder}' does not exist in the repository."
+              FAILED=1
+              return
+            fi
+
+            local violations=0
+            while IFS= read -r -d '' entry; do
+              local name matched
+              name=$(basename "$entry")
+              matched=0
+
+              if [[ -d "$entry" ]]; then
+                for pat in "${dir_pats[@]+"${dir_pats[@]}"}"; do
+                  [[ "$name" == $pat ]] && matched=1 && break || true
+                done
+                if [[ "$matched" -eq 0 ]]; then
+                  echo "  Unexpected directory: $name"
+                  violations=$(( violations + 1 ))
+                fi
+              else
+                for pat in "${file_pats[@]+"${file_pats[@]}"}"; do
+                  [[ "$name" == $pat ]] && matched=1 && break || true
+                done
+                if [[ "$matched" -eq 0 ]]; then
+                  echo "  Unexpected file: $name"
+                  violations=$(( violations + 1 ))
+                fi
+              fi
+            done < <(find "$folder" -maxdepth 1 -mindepth 1 -print0 | sort -z)
+
+            if [[ "$violations" -eq 0 ]]; then
+              echo "  OK"
+            else
+              FAILED=1
+            fi
+          }
+
+          # ── Rules ─────────────────────────────────────────────────────────────
+          # deployments/developer-workflow/ may only contain:
+          #   - a file named compose.yml
+          #   - directories whose names start with dev-profile-
+          check_folder "deployments/developer-workflow" \
+            "file:compose.yml" \
+            "dir:dev-profile-*"
+
+          # To add more rules copy the pattern above, e.g.:
+          # check_folder "deployments/production" \
+          #   "file:compose.yml" \
+          #   "dir:prod-profile-*"
+          # ─────────────────────────────────────────────────────────────────────
+
+          if [[ "$FAILED" -ne 0 ]]; then
+            echo ""
+            echo "FAILED: folder structure violations found. See entries above."
+            exit 1
+          fi
+
+          echo ""
+          echo "PASSED: all folder structure checks passed."
